@@ -22,6 +22,8 @@ jobs:
   extract-and-release:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Resolve SDK version
         id: ver
         run: |
