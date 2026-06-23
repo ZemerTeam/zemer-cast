@@ -1,0 +1,79 @@
+name: build-release
+
+# Extracts the FCast sender-SDK native libs from the official jitpack aar (the exact artifact the app
+# would otherwise bundle), checksums them, and publishes a GitHub release. No hand-uploaded binaries —
+# every asset is produced by this workflow and reproducible from a pinned SDK version.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_version:
+        description: "fcast sender-sdk-minimal version on jitpack"
+        required: true
+        default: "0.4.0"
+  push:
+    tags:
+      - "sdk-*"
+
+permissions:
+  contents: write
+
+jobs:
+  extract-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve SDK version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            V="${GITHUB_REF_NAME#sdk-}"
+          else
+            V="${{ github.event.inputs.sdk_version }}"
+          fi
+          [ -n "$V" ] || { echo "::error::no SDK version resolved"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "SDK version: $V"
+
+      - name: Download official SDK aar from jitpack
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          URL="https://jitpack.io/org/futo/gitlab/videostreaming/fcast-sdk-jitpack/sender-sdk-minimal/${V}/sender-sdk-minimal-${V}.aar"
+          echo "Downloading $URL"
+          curl -fSL --retry 8 --retry-all-errors --retry-delay 15 -o sdk.aar "$URL"
+          echo "source aar sha256: $(sha256sum sdk.aar | cut -d' ' -f1)"
+          ls -la sdk.aar
+
+      - name: Extract per-ABI native libs (the two ABIs Zemer ships)
+        run: |
+          mkdir -p out
+          for ABI in arm64-v8a armeabi-v7a; do
+            unzip -p sdk.aar "jni/$ABI/libfcast_sender_sdk.so" > "out/libfcast_sender_sdk-$ABI.so"
+            test -s "out/libfcast_sender_sdk-$ABI.so" || { echo "::error::missing $ABI lib in aar"; exit 1; }
+          done
+          ( cd out && sha256sum libfcast_sender_sdk-*.so | tee SHA256SUMS )
+          ls -la out
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          TAG="sdk-$V"
+          {
+            echo "FCast \`sender-sdk-minimal\` **$V** native libs, extracted by CI from the official jitpack aar"
+            echo "(\`org.futo.gitlab.videostreaming.fcast-sdk-jitpack:sender-sdk-minimal:$V\`) — the exact artifact"
+            echo "the app would otherwise bundle."
+            echo ""
+            echo "Pin these SHA-256 sums in the app (verified before \`System.load()\`):"
+            echo '```'
+            cat out/SHA256SUMS
+            echo '```'
+          } > notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/libfcast_sender_sdk-arm64-v8a.so out/libfcast_sender_sdk-armeabi-v7a.so out/SHA256SUMS --clobber
+            gh release edit "$TAG" --notes-file notes.md --title "FCast SDK $V"
+          else
+            gh release create "$TAG" out/libfcast_sender_sdk-arm64-v8a.so out/libfcast_sender_sdk-armeabi-v7a.so out/SHA256SUMS \
+              --title "FCast SDK $V" --notes-file notes.md
+          fi
+          echo "Released $TAG"
