@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   extract-and-release:
-    runs-on: [self-hosted, linux, x64, debiantripleu-ci]
+    runs-on: debiantripleu-ci
     steps:
       - uses: actions/checkout@v4
 
